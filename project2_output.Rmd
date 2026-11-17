@@ -1,0 +1,292 @@
+---
+title: "BIOSTAT721 - Project 2"
+author: "Gaeun Jeon"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+# github
+# https://github.com/gjeon316/biostat721_project2.git
+
+# libraries
+library(tidyverse)
+library(lubridate)
+library(gt)
+
+# choose ozone unit "ppm" or "ppb"
+o3_unit <- "ppm"
+```
+
+
+```{r, message = FALSE}
+# Purpose: process a single year of data to output clean dataframe
+# Argument: file_path - file path of the dataset
+# Argument: o3_unit - unit of ozone; ppm by default
+# Return: clean dataframe, ready for analysis
+process_aq <- function(file_path, unit = o3_unit) {
+  # read in and clean data
+  clean_data <- read_csv(file_path) |>
+    # format date correctly
+    mutate(Date = mdy(Date)) |>
+    # rename columns
+    rename(
+      co = `Daily Max 8-hour CO Concentration`,
+      pm25 = `Daily Mean PM2.5 Concentration`,
+      ozone = `Daily Max 8-hour Ozone Concentration`
+    ) |>
+    # drop unit columns
+    select(Date, co, pm25, ozone) |>
+    # drop duplicates
+    distinct() |>
+    # daily averages if multiple measurements for same day
+    group_by(Date) |>
+    summarize(
+      co = mean(co, na.rm = TRUE),
+      pm25 = mean(pm25, na.rm = TRUE),
+      ozone = mean(ozone, na.rm = TRUE),
+      .groups = "drop"
+    ) |>
+    # negative pollutants to 0
+    mutate(across(c(co, pm25, ozone), ~ pmax(.x, 0, na.rm = TRUE)))
+
+  # ozone ppb option
+  if (unit == "ppb") {
+    clean_data <- clean_data |>
+      mutate(ozone = ozone * 1000)
+  } else if (unit != "ppm") {
+    stop("Invalid unit argument. Please choose either 'ppm' or 'ppb'.")
+  }
+
+  # return clean data
+  return(clean_data)
+}
+
+# run function on each dataset
+clean_2018 <- process_aq("data/AQ_2018.csv", o3_unit)
+clean_2019 <- process_aq("data/AQ_2019.csv", o3_unit)
+clean_2020 <- process_aq("data/AQ_2020.csv", o3_unit)
+
+# combine into single dataset
+all_years_data <- bind_rows(clean_2018, clean_2019, clean_2020)
+```
+
+## Minimum and Maximum Pollutants for Each Year
+```{r}
+# Purpose: make table for a single year, showing min/max for each pollutant
+# Argument: df - clean data frame
+# Argument: year_label - the year
+# Return: clean table
+create_summary_table <- function(df, year_label, unit = o3_unit) {
+  df |>
+    # calculate the min/max for each pollutant, rounding to 3 decimals
+    summarize(
+      CO_min = round(min(co, na.rm = TRUE), 3),
+      CO_max = round(max(co, na.rm = TRUE), 3),
+      PM25_min = round(min(pm25, na.rm = TRUE), 3),
+      PM25_max = round(max(pm25, na.rm = TRUE), 3),
+      O3_min = round(min(ozone, na.rm = TRUE), 3),
+      O3_max = round(max(ozone, na.rm = TRUE), 3)
+    ) |>
+    # reshape the wide summary statistics into a long format
+    pivot_longer(
+      cols = everything(),
+      names_to = c("Pollutant", "Statistic"),
+      names_sep = "_"
+    ) |>
+    # reshape back so min and max become columns and pollutants become rows
+    pivot_wider(
+      names_from = Statistic,
+      values_from = value
+    ) |>
+    # assign clear, informative row names that include measurement units
+    mutate(Pollutant = c(
+      "Carbon Monoxide (ppm)",
+      "PM2.5 (µg/m³ LC)",
+      paste0("Ozone (", unit, ")")
+    )) |>
+    # initialize the gt table and add professional headers and labels
+    gt() |>
+    cols_label(
+      Pollutant = "Pollutant and Units",
+      min = "Minimum Daily Concentration",
+      max = "Maximum Daily Concentration"
+    ) |>
+    tab_header(
+      title = paste("Daily Air Quality Summary - ", year_label)
+    )
+}
+```
+
+```{r}
+# 2018 min/max pollutants
+create_summary_table(clean_2018, 2018, o3_unit)
+```
+&nbsp;
+
+```{r}
+# 2019 min/max pollutants
+create_summary_table(clean_2019, 2019, o3_unit)
+```
+&nbsp;
+
+```{r}
+# 2020 min/max pollutants
+create_summary_table(clean_2020, 2020, o3_unit)
+```
+
+\pagebreak
+
+## Carbon Monoxide and Ozone by Month
+```{r}
+# calculate monthly mean, SD, sample size, and 95% CI for CO and Ozone
+monthly_stats <- all_years_data |>
+  # get month from Date column
+  mutate(Month = month(Date, label = TRUE, abbr = TRUE)) |>
+  group_by(Month) |>
+  summarise(
+    # --- Carbon Monoxide (CO) stats ---
+    co_mean = mean(co, na.rm = TRUE),
+    co_sd = sd(co, na.rm = TRUE),
+    co_n = sum(!is.na(co)), # number of non-missing days
+    co_ci = 1.96 * (co_sd / sqrt(co_n)), # margin of error
+    co_lower = co_mean - co_ci, # CI lower bound
+    co_upper = co_mean + co_ci, # CI upper bound
+
+    # --- Ozone (O3) stats ---
+    o3_mean = mean(ozone, na.rm = TRUE),
+    o3_sd = sd(ozone, na.rm = TRUE),
+    o3_n = sum(!is.na(ozone)), # number of non-missing days
+    o3_ci = 1.96 * (o3_sd / sqrt(o3_n)), # margin of error
+    o3_lower = o3_mean - o3_ci, # CI lower bound
+    o3_upper = o3_mean + o3_ci, # CI upper bound
+
+    .groups = "drop"
+  )
+```
+
+```{r}
+# reshape the summary statistics into a long format for ggplot
+monthly_long <- monthly_stats |>
+  # Stack co_mean and o3_mean into a single column called 'Mean'
+  pivot_longer(
+    cols = c(co_mean, o3_mean),
+    names_to = "Pollutant",
+    values_to = "Mean"
+  ) |>
+  # Assign the correct lower and upper CI bounds depending on the pollutant
+  mutate(
+    Lower = if_else(Pollutant == "co_mean",
+      co_lower,
+      o3_lower
+    ),
+    Upper = if_else(Pollutant == "co_mean",
+      co_upper,
+      o3_upper
+    ),
+    # Rename the pollutant codes into clean, readable labels for the plot
+    Pollutant = if_else(Pollutant == "co_mean",
+      "Carbon Monoxide (CO)",
+      paste0("Ozone (O3) [", o3_unit, "]")
+    )
+  ) |>
+  # Keep only the columns needed for plotting
+  select(Month, Pollutant, Mean, Lower, Upper)
+```
+
+```{r}
+# colors for ggplot
+ozone_label <- paste0("Ozone (O3) [", o3_unit, "]")
+color_map <- c("darkblue", "hotpink")
+names(color_map) <- c("Carbon Monoxide (CO)", ozone_label)
+
+# create the ggplot visualization for Plot 1
+ggplot(monthly_long, aes(x = Month, y = Mean, color = Pollutant)) +
+  # add points to display the monthly mean concentrations
+  geom_point(size = 3) +
+  # error bars for 95% CIs using our Lower and Upper bounds
+  geom_errorbar(aes(ymin = Lower, ymax = Upper), width = 0.2, linewidth = 0.8) +
+  scale_color_manual(values = color_map) +
+  # CO and Ozone will have independent y-axes
+  facet_wrap(~Pollutant, scales = "free_y", ncol = 1) +
+  # add labels
+  labs(
+    title = "Monthly Average Air Quality Trends (2018–2020)",
+    x = "Month",
+    y = "Concentration (CO in ppm, Ozone in specified unit)"
+  ) +
+  theme_minimal() +
+  # hide the legend
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold", size = 12)
+  )
+```
+
+Because carbon monoxide and ozone are measured on very different scales, independent y-axes (scales = "free_y" in the facet_wrap function) were used for each pollutant to ensure the patterns in both pollutants are readable.
+
+\pagebreak
+
+## $PM_{2.5}$ by Month and Year
+```{r}
+# prepare monthly data PM2.5 grouped by year and month
+pm25_monthly <- all_years_data |>
+  # extract month and year
+  mutate(
+    Month = month(Date, label = TRUE, abbr = TRUE),
+    Year = factor(year(Date))
+  ) |>
+  # calculate mean for each month in each year
+  group_by(Year, Month) |>
+  summarize(
+    pm25_mean = mean(pm25, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r}
+# create the ggplot visualization for Plot 2
+ggplot(
+  pm25_monthly,
+  aes(x = Month, y = pm25_mean, color = Year, group = Year)
+) +
+  # connecting lines
+  geom_line(linewidth = 1) +
+  # points to show each monthly mean value
+  geom_point(size = 2.5) +
+  # colors for each year
+  scale_color_manual(values = c(
+    "2018" = "darkblue",
+    "2019" = "darkorange",
+    "2020" = "hotpink"
+  )) +
+  # labels
+  labs(
+    title = "Monthly Average PM2.5 Concentration",
+    y = "PM2.5 Concentration (µg/m³ LC)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 12)
+  )
+```
+
+I used `geom_line` to show how the $PM_{2.5}$ concentration changed throughout the year, and I combined it with `geom_point` to make each month stand out.
+
+## Interpretation
+While interpreting, I kept in mind that 2020 only has data until the end of April.
+
+* According to the tables, maximum daily concentration of $PM_{2.5}$ increased by almost 10 units from 2019 to 2020, compared to 1 unit increase from 2018 to 2020.
+* According to the plot of $CO$ and $O_3$ by month, they are opposite of each other: carbon monoxide decreases then increases throughout the year, and ozone increases then decreases throughout the year.
+* According to the $PM_{2.5}$ plot, while the peak concentrations vary across years and 2019 fluctuates, the annual lows consistently occur during the late summer and early fall months (at least for 2018 and 2019).
+
+### AI Use Statement
+I used AI to help write and debug the R code for data processing and plots. I checked its output by testing the code myself and collaborating on improvements, like figuring out the global variable for the ozone unit.
+
+### Version of R and packages
+This analysis was performed using `r R.version.string`.\
+`tidyverse` version: `r packageVersion("tidyverse")`\
+`lubridate` version: `r packageVersion("lubridate")`\
+`gt` version: `r packageVersion("gt")`\
