@@ -20,4 +20,4 @@ Pollutant measurements were obtained from the EPA air pollution monitor at the R
    install.packages(c("tidyverse", "lubridate", "gt"))
    ```
 3. Set the ozone unit in the setup chunk, under the libraries.
-4. Knit
+4. Knit to Word
